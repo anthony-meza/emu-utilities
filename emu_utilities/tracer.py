@@ -4,9 +4,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import xarray as xr
+import sys
 
-from .emu_utilities import EMU, find_time_from_file_names
-from .resample import llc_compact_to_tiles
+# import the ECCOv4 py library 
+sys.path.insert(0,'../ECCOv4-py')
+import ecco_v4_py as ecco
 
 if TYPE_CHECKING:
     from numpy import datetime64
@@ -40,43 +42,6 @@ class EMUTracerGradient(EMU):
             raise ValueError(f"Expected EMU tool 'trcr', but got '{self.tool}' from directory: {self.run_name}")
         self.mean = mean
 
-    def find_time(self) -> NDArray[datetime64]:
-        """Extract timestamps from tracer file names.
-
-        Returns:
-            Array of datetime64 objects representing available timestamps.
-        """
-        pattern = "output/ptracer_mon_mean.*.data" if self.mean else "output/ptracer_mon_snap.*.data"
-        return np.array(find_time_from_file_names(self.directory, pattern))
-
-    def load_data(self, trcr_files) -> NDArray[np.float32]:
-        """Load tracer data from binary files and apply appropriate scaling.
-
-        Applies vertical and horizontal area weights to correctly represent
-        the tracer concentration in each cell.
-
-        Args:
-            trcr_files: List of tracer data files to load.
-
-        Returns:
-            Structured array of tracer data with applied weights.
-        """
-        data = np.full(
-            (self.time.size, self.nr, self.ntiles, self.ny // self.ntiles, self.nx), np.nan, dtype=np.float32
-        )
-
-        for i, trcr_file in enumerate(trcr_files):
-            with open(trcr_file, "rb") as f:
-                full_data = np.fromfile(f, dtype=">f4").astype(np.float32)
-            data[i] = llc_compact_to_tiles(full_data.reshape((self.nr, self.ny, self.nx)))
-            for k in range(self.nr):
-                # Apply vertical and horizontal area weights to correctly represent tracer concentration
-                data[i, k, :, :, :] = (
-                    data[i, k, :, :, :] * self._coordinate_factory.drf[k] * self._coordinate_factory.hfacc[k, :, :, :]
-                )
-
-        return data
-
     def make_dataset(self) -> xr.Dataset:
         """Create an xarray Dataset from tracer data.
 
@@ -87,25 +52,14 @@ class EMUTracerGradient(EMU):
             Dataset containing tracer data with appropriate coordinates and metadata.
         """
         if self.mean:
-            trcr_files = list(self.directory.glob("output/ptracer_mon_mean.*.data"))
+            ds = ecco.load_ecco_vars_from_mds(self.directory.glob("output"), 
+                                mds_grid_dir = self.directory.glob("temp"), 
+                                mds_files = "ptracer_mon_mean")
         else:
-            trcr_files = list(self.directory.glob("output/ptracer_mon_snap.*.data"))
-        time_unsorted = self.find_time()
-        sort_idx = np.argsort(time_unsorted)
-        self.time = time_unsorted[sort_idx]
-        trcr_files = [trcr_files[i] for i in sort_idx]
-
-        data = self.load_data(trcr_files)
-
-        coords = self._coordinate_factory.create_tile_coordinates(include_z=True, include_time=True, times=self.time)
-        data_vars = {
-            "tracer": (["time", "k", "tile", "j", "i"], data),
-        }
-        ds = self.create_base_dataset(data_vars, coords)
-
-        # Apply ocean mask to exclude land areas
-        mask = self._coordinate_factory.create_mask(include_z=True)
-        ds = ds.where(mask > 0)
+            ds = ecco.load_ecco_vars_from_mds(self.directory.glob("output"), 
+                                mds_grid_dir = self.directory.glob("temp"), 
+                                mds_files = "ptracer_mon_mean")
+            ds = ds.rename({"TRAC01":"tracer"})
 
         # Calculate depth-integrated tracer values
         ds["tracer_depth_integrated"] = (ds["tracer"] * mask).sum(dim="k", min_count=1)
