@@ -10,6 +10,8 @@ import sys
 sys.path.insert(0,'../ECCOv4-py')
 import ecco_v4_py as ecco
 
+from .emu_utilities import EMU
+
 if TYPE_CHECKING:
     from numpy import datetime64
     from numpy.typing import NDArray
